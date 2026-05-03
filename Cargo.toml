@@ -1,0 +1,30 @@
+[package]
+name = "tibber-cli"
+version = "0.1.0"
+edition = "2024"
+description = "Tibber CLI tool"
+license = "Apache-2.0"
+repository = "https://github.com/erwin314/tibber-cli"
+
+[dependencies]
+anyhow = "1.0.102"
+directories = "6.0.0"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.bench]
+inherits = "release"
+debug = true
+strip = false
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.dev.package."*"]
+opt-level = 3
