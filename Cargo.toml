@@ -5,6 +5,9 @@ edition = "2024"
 description = "Tibber CLI tool"
 license = "Apache-2.0"
 repository = "https://github.com/erwin314/tibber-cli"
+readme = "README.md"
+keywords = ["tibber", "energy", "cli", "price"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow = "1.0.102"

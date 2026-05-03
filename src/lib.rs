@@ -345,3 +345,78 @@ fn get_cache_dir() -> anyhow::Result<PathBuf> {
     std::fs::create_dir_all(cache_dir).context("failed to create cache directory")?;
     Ok(cache_dir.to_path_buf())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Creates a [`api::Home`] with the given ID and name, using UTC as timezone.
+    fn home(id: &str, name: &str) -> api::Home {
+        api::Home {
+            id: api::HomeId(id.to_owned()),
+            name: name.to_owned(),
+            time_zone: chrono_tz::UTC,
+        }
+    }
+
+    // -- resolve_home ----------------------------------------------------------
+
+    #[test]
+    fn resolve_home_auto_selects_single_home() {
+        // Arrange
+        let homes = [home("abc", "My House")];
+
+        // Act
+        let result = resolve_home(None, &homes);
+
+        // Assert
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().id, api::HomeId("abc".to_owned()));
+    }
+
+    #[test]
+    fn resolve_home_finds_matching_id() {
+        // Arrange
+        let homes = [home("aaa", "Home A"), home("bbb", "Home B")];
+        let target = api::HomeId("bbb".to_owned());
+
+        // Act
+        let result = resolve_home(Some(&target), &homes);
+
+        // Assert
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().name, "Home B");
+    }
+
+    #[test]
+    fn resolve_home_errors_on_unknown_id() {
+        // Arrange
+        let homes = [home("aaa", "Home A")];
+        let target = api::HomeId("zzz".to_owned());
+
+        // Act
+        let result = resolve_home(Some(&target), &homes);
+
+        // Assert
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("zzz"), "error should mention the unknown ID");
+    }
+
+    #[test]
+    fn resolve_home_errors_when_multiple_homes_without_selection() {
+        // Arrange
+        let homes = [home("aaa", "Home A"), home("bbb", "Home B")];
+
+        // Act
+        let result = resolve_home(None, &homes);
+
+        // Assert
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("--home-id"),
+            "error should hint at --home-id flag"
+        );
+    }
+}

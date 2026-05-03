@@ -30,7 +30,7 @@ impl std::str::FromStr for HomeId {
 }
 
 /// A Tibber home with its resolved display name and timezone.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Home {
     /// Unique identifier for the home.
     pub id: HomeId,
@@ -322,64 +322,90 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use chrono_tz::Europe::Oslo;
 
-    #[test]
-    fn test_has_tomorrow_prices() {
+    /// Creates a [`PriceData`] fixture with the given `includes_next_day` flag
+    /// and a `stale_after` of 2023-01-01 23:00 UTC.
+    fn price_data_fixture(includes_next_day: bool) -> PriceData {
         let stale_after = Utc
             .with_ymd_and_hms(2023, 1, 1, 23, 0, 0)
             .unwrap()
             .fixed_offset();
 
-        let mut data = PriceData {
+        PriceData {
             prices: BTreeMap::new(),
             currency: None,
             stale_after,
-            includes_next_day: true,
-        };
+            includes_next_day,
+        }
+    }
 
-        // Before stale_after -> valid
+    // -- has_tomorrow_prices_at ------------------------------------------------
+
+    #[test]
+    fn has_tomorrow_prices_valid_before_stale_after() {
+        // Arrange
+        let data = price_data_fixture(true);
         let now = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+
+        // Act & Assert
         assert!(data.has_tomorrow_prices_at(&now));
+    }
 
-        // After stale_after -> invalid
+    #[test]
+    fn has_tomorrow_prices_invalid_after_stale_after() {
+        // Arrange
+        let data = price_data_fixture(true);
         let now = Utc.with_ymd_and_hms(2023, 1, 2, 0, 0, 1).unwrap();
-        assert!(!data.has_tomorrow_prices_at(&now));
 
-        // includes_next_day = false -> invalid
-        data.includes_next_day = false;
+        // Act & Assert
+        assert!(!data.has_tomorrow_prices_at(&now));
+    }
+
+    #[test]
+    fn has_tomorrow_prices_false_when_not_included() {
+        // Arrange
+        let data = price_data_fixture(false);
         let now = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+
+        // Act & Assert
         assert!(!data.has_tomorrow_prices_at(&now));
     }
 
+    // -- should_fetch_new_price_data_at ----------------------------------------
+
     #[test]
-    fn test_should_fetch_new_price_data() {
-        let stale_after = Utc
-            .with_ymd_and_hms(2023, 1, 1, 23, 0, 0)
-            .unwrap()
-            .fixed_offset();
-
-        let mut data = PriceData {
-            prices: BTreeMap::new(),
-            currency: None,
-            stale_after,
-            includes_next_day: false,
-        };
-
-        // 13:00 Oslo time -> shouldn't fetch
+    fn should_not_fetch_before_14h_local_time() {
+        // Arrange
+        let data = price_data_fixture(false);
         let now = Oslo.with_ymd_and_hms(2023, 1, 1, 13, 0, 0).unwrap();
-        assert!(!data.should_fetch_new_price_data_at(Oslo, &now));
 
-        // 14:00 Oslo time -> should fetch
-        let now = Oslo.with_ymd_and_hms(2023, 1, 1, 14, 0, 0).unwrap();
-        assert!(data.should_fetch_new_price_data_at(Oslo, &now));
-
-        // If we already have next day -> shouldn't fetch
-        data.includes_next_day = true;
+        // Act & Assert
         assert!(!data.should_fetch_new_price_data_at(Oslo, &now));
     }
 
     #[test]
-    fn test_current_price() {
-        let mut prices = BTreeMap::new();
+    fn should_fetch_after_14h_when_no_tomorrow_prices() {
+        // Arrange
+        let data = price_data_fixture(false);
+        let now = Oslo.with_ymd_and_hms(2023, 1, 1, 14, 0, 0).unwrap();
+
+        // Act & Assert
+        assert!(data.should_fetch_new_price_data_at(Oslo, &now));
+    }
+
+    #[test]
+    fn should_not_fetch_when_tomorrow_prices_present() {
+        // Arrange
+        let data = price_data_fixture(true);
+        let now = Oslo.with_ymd_and_hms(2023, 1, 1, 14, 0, 0).unwrap();
+
+        // Act & Assert
+        assert!(!data.should_fetch_new_price_data_at(Oslo, &now));
+    }
+
+    // -- current_price_at ------------------------------------------------------
+
+    /// Creates a [`PriceData`] with two price slots: 10:00 → 1.5 and 11:00 → 2.5.
+    fn two_slot_price_data() -> PriceData {
         let t1 = Utc
             .with_ymd_and_hms(2023, 1, 1, 10, 0, 0)
             .unwrap()
@@ -389,49 +415,95 @@ mod tests {
             .unwrap()
             .fixed_offset();
 
+        let mut prices = BTreeMap::new();
         prices.insert(t1, 1.5);
         prices.insert(t2, 2.5);
 
-        let data = PriceData {
+        PriceData {
             prices,
             currency: None,
             stale_after: t2,
             includes_next_day: false,
-        };
+        }
+    }
 
-        // Before first -> None
+    #[test]
+    fn current_price_none_before_first_slot() {
+        // Arrange
+        let data = two_slot_price_data();
         let now = Utc
             .with_ymd_and_hms(2023, 1, 1, 9, 0, 0)
             .unwrap()
             .fixed_offset();
-        assert_eq!(data.current_price_at(now), None);
 
-        // At first -> 1.5
+        // Act
+        let price = data.current_price_at(now);
+
+        // Assert
+        assert_eq!(price, None);
+    }
+
+    #[test]
+    fn current_price_returns_first_slot_at_start() {
+        // Arrange
+        let data = two_slot_price_data();
         let now = Utc
             .with_ymd_and_hms(2023, 1, 1, 10, 0, 0)
             .unwrap()
             .fixed_offset();
-        assert_eq!(data.current_price_at(now), Some(1.5));
 
-        // Between first and second -> 1.5
+        // Act
+        let price = data.current_price_at(now);
+
+        // Assert
+        assert_eq!(price, Some(1.5));
+    }
+
+    #[test]
+    fn current_price_remains_in_first_slot_between_boundaries() {
+        // Arrange
+        let data = two_slot_price_data();
         let now = Utc
             .with_ymd_and_hms(2023, 1, 1, 10, 30, 0)
             .unwrap()
             .fixed_offset();
-        assert_eq!(data.current_price_at(now), Some(1.5));
 
-        // At second -> 2.5
+        // Act
+        let price = data.current_price_at(now);
+
+        // Assert
+        assert_eq!(price, Some(1.5));
+    }
+
+    #[test]
+    fn current_price_advances_to_second_slot() {
+        // Arrange
+        let data = two_slot_price_data();
         let now = Utc
             .with_ymd_and_hms(2023, 1, 1, 11, 0, 0)
             .unwrap()
             .fixed_offset();
-        assert_eq!(data.current_price_at(now), Some(2.5));
 
-        // After second -> 2.5 (until next fetch)
+        // Act
+        let price = data.current_price_at(now);
+
+        // Assert
+        assert_eq!(price, Some(2.5));
+    }
+
+    #[test]
+    fn current_price_holds_last_slot_after_final_boundary() {
+        // Arrange
+        let data = two_slot_price_data();
         let now = Utc
             .with_ymd_and_hms(2023, 1, 1, 12, 0, 0)
             .unwrap()
             .fixed_offset();
-        assert_eq!(data.current_price_at(now), Some(2.5));
+
+        // Act
+        let price = data.current_price_at(now);
+
+        // Assert
+        assert_eq!(price, Some(2.5));
     }
 }
