@@ -7,7 +7,7 @@ description: Automatically resolve borrow checker, lifetime, and type mismatch e
 2.  **Check:** Run `cargo check --message-format=json`. 
 3.  **Analyze & Iterate (Max 3 Loops):**
     *   If `cargo check` fails, read the compiler output. Pay special attention to Rust compiler help messages (e.g., "consider borrowing here: `&foo`").
-    *   Formulate a plan to fix the error (preferring safe Rust and referencing `rust-idioms.md`).
+    *   Formulate a plan to fix the error (preferring safe Rust and referencing `AGENTS.md`).
     *   Apply the fix to the code.
     *   Re-run `cargo check`.
 4.  **Linting:** Once `cargo check` passes cleanly, run `cargo clippy -- -W clippy::pedantic`. Apply any suggested idiomatic fixes.
