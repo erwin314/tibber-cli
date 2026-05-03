@@ -1,10 +1,12 @@
 //! Tibber CLI library — fetches and caches energy price data from the Tibber API.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use clap::{Parser, ValueEnum};
 use directories::ProjectDirs;
+use tempfile::NamedTempFile;
 
 /// Tibber GraphQL API client — home discovery and energy price retrieval.
 pub mod api;
@@ -201,7 +203,7 @@ fn load_or_fetch_homes(
 
     let content =
         serde_json::to_string_pretty(&homes).context("failed to serialize homes for cache")?;
-    std::fs::write(&cache_path, content).context("failed to write homes cache file")?;
+    atomic_write_file(&cache_path, content.as_bytes())?;
 
     Ok(homes)
 }
@@ -286,7 +288,7 @@ fn fetch_and_write_prices(
 
     let content =
         serde_json::to_string_pretty(&data).context("failed to serialize price data for cache")?;
-    std::fs::write(&cache_path, &content).context("failed to write price cache file")?;
+    atomic_write_file(&cache_path, content.as_bytes())?;
 
     Ok(data)
 }
@@ -329,6 +331,27 @@ fn print_current_price(home: &api::Home, price_data: &api::PriceData, format: Pr
     } else {
         println!("{}: no current price available", home.name);
     }
+}
+
+/// Atomically writes `data` to `path` by writing to a temporary file in the
+/// same directory and then persisting it over the target.
+///
+/// This guarantees concurrent readers always see either the previous complete
+/// file or the new complete file — never a truncated or partially written one.
+///
+/// # Errors
+///
+/// Returns an error if the temporary file cannot be created, written, or
+/// persisted.
+fn atomic_write_file(path: &Path, data: &[u8]) -> anyhow::Result<()> {
+    let dir = path
+        .parent()
+        .context("cache file path has no parent directory")?;
+    let mut tmp = NamedTempFile::new_in(dir).context("failed to create temporary cache file")?;
+    tmp.write_all(data)
+        .context("failed to write temporary cache file")?;
+    tmp.persist(path).context("failed to persist cache file")?;
+    Ok(())
 }
 
 /// Determines the cache location, creates it if it doesn't exist, and returns
