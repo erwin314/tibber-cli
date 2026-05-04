@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use directories::ProjectDirs;
 use tempfile::NamedTempFile;
 
@@ -35,7 +35,6 @@ pub enum PriceFormat {
 /// Command-line arguments for the Tibber CLI.
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
-#[allow(clippy::struct_excessive_bools)]
 pub struct Cli {
     /// The Tibber API access token
     #[arg(short, long, env = "TIBBER_ACCESS_TOKEN", hide_env_values = true)]
@@ -49,34 +48,42 @@ pub struct Cli {
     #[arg(short, long, value_enum, default_value_t = FetchMode::Smart)]
     pub fetch_mode: FetchMode,
 
-    /// Show the current energy price
-    #[arg(short, long)]
-    pub show_current_price: bool,
+    /// Never make API calls — only read from cache.
+    ///
+    /// Useful for fast, offline price lookups (e.g. cron every 15 min with
+    /// show-current-price). Fails if the cache is empty.
+    #[arg(long)]
+    pub cache_only: bool,
 
-    /// Output format for price display
-    #[arg(short, long, value_enum, default_value_t = PriceFormat::Full)]
-    pub output_format: PriceFormat,
+    /// The action to perform (e.g., show-current-price, fetch-prices).
+    #[command(subcommand)]
+    pub action: Action,
+}
+
+/// The main actions available in the Tibber CLI.
+#[derive(Subcommand, Debug)]
+pub enum Action {
+    /// Show the current energy price
+    #[command(name = "show-current-price")]
+    ShowCurrentPrice {
+        /// Output format for price display
+        #[arg(short, long, value_enum, default_value_t = PriceFormat::Full)]
+        output_format: PriceFormat,
+    },
 
     /// Fetch and cache energy prices, then exit.
     ///
     /// Intended for periodic use (e.g. cron every hour). Respects --fetch-mode.
-    #[arg(short = 'p', long)]
-    pub fetch_prices: bool,
-
-    /// Never make API calls — only read from cache.
-    ///
-    /// Useful for fast, offline price lookups (e.g. cron every 15 min with
-    /// --show-current-price). Fails if the cache is empty.
-    #[arg(long)]
-    pub cache_only: bool,
+    #[command(name = "fetch-prices")]
+    FetchPrices,
 
     /// List all available homes and exit
-    #[arg(short, long)]
-    pub list_homes: bool,
+    #[command(name = "list-homes")]
+    ListHomes,
 
     /// Clear all cached data (homes and prices) and exit
-    #[arg(short, long)]
-    pub clear_cache: bool,
+    #[command(name = "clear-cache")]
+    ClearCache,
 }
 
 /// Runs the CLI application logic.
@@ -87,33 +94,34 @@ pub struct Cli {
 pub fn run(cli: &Cli) -> anyhow::Result<()> {
     let cache_dir = get_cache_dir()?;
 
-    if cli.clear_cache {
-        clear_cache(&cache_dir)?;
+    if let Action::ClearCache = cli.action {
+        clear_cache_cmd(&cache_dir)?;
         return Ok(());
     }
 
     let homes = load_or_fetch_homes(&cli.access_token, &cache_dir, cli.cache_only)?;
 
-    if cli.list_homes {
-        print_homes(&homes);
+    if let Action::ListHomes = cli.action {
+        list_homes_cmd(&homes);
         return Ok(());
     }
 
     let home = resolve_home(cli.home_id.as_ref(), &homes)?;
 
-    if cli.fetch_prices {
-        fetch_and_cache_prices(&cli.access_token, home, cli.fetch_mode, &cache_dir)?;
-        return Ok(());
-    }
-
-    if cli.show_current_price {
-        show_current_price_cmd(
-            &cli.access_token,
-            home,
-            cli.cache_only,
-            cli.output_format,
-            &cache_dir,
-        )?;
+    match &cli.action {
+        Action::FetchPrices => {
+            fetch_prices_cmd(&cli.access_token, home, cli.fetch_mode, &cache_dir)?;
+        }
+        Action::ShowCurrentPrice { output_format } => {
+            show_current_price_cmd(
+                &cli.access_token,
+                home,
+                cli.cache_only,
+                *output_format,
+                &cache_dir,
+            )?;
+        }
+        Action::ClearCache | Action::ListHomes => unreachable!(),
     }
 
     Ok(())
@@ -142,7 +150,7 @@ fn show_current_price_cmd(
         .is_some_and(|d| d.current_price().is_some());
 
     if !has_price && !cache_only {
-        price_data = Some(fetch_and_write_prices(access_token, home, cache_dir)?);
+        price_data = Some(force_fetch_and_cache_prices(access_token, home, cache_dir)?);
     }
 
     if let Some(data) = &price_data {
@@ -161,7 +169,7 @@ fn show_current_price_cmd(
 /// # Errors
 ///
 /// Returns an error if the directory exists but cannot be removed.
-fn clear_cache(cache_dir: &Path) -> anyhow::Result<()> {
+fn clear_cache_cmd(cache_dir: &Path) -> anyhow::Result<()> {
     if cache_dir.exists() {
         std::fs::remove_dir_all(cache_dir).context("failed to clear cache directory")?;
     }
@@ -227,6 +235,7 @@ fn resolve_home<'a>(
             .iter()
             .find(|h| h.id == *id)
             .with_context(|| format!("home with ID '{id}' not found")),
+        (None, 0) => anyhow::bail!("no homes found in your Tibber account"),
         (None, 1) => Ok(&homes[0]),
         (None, _) => {
             anyhow::bail!(
@@ -245,7 +254,7 @@ fn resolve_home<'a>(
 /// # Errors
 ///
 /// Returns an error if the API request fails or the cache cannot be written.
-fn fetch_and_cache_prices(
+fn fetch_prices_cmd(
     access_token: &str,
     home: &api::Home,
     fetch_mode: FetchMode,
@@ -262,7 +271,7 @@ fn fetch_and_cache_prices(
     };
 
     if needs_fetch {
-        fetch_and_write_prices(access_token, home, cache_dir)?;
+        force_fetch_and_cache_prices(access_token, home, cache_dir)?;
         println!("Prices cached for {}.", home.name);
     } else {
         println!("Cache is up-to-date for {}.", home.name);
@@ -276,7 +285,7 @@ fn fetch_and_cache_prices(
 /// # Errors
 ///
 /// Returns an error if the API request fails or the cache cannot be written.
-fn fetch_and_write_prices(
+fn force_fetch_and_cache_prices(
     access_token: &str,
     home: &api::Home,
     cache_dir: &Path,
@@ -311,7 +320,7 @@ fn load_price_cache(cache_path: &Path) -> anyhow::Result<Option<api::PriceData>>
 }
 
 /// Prints the list of available homes to stdout.
-fn print_homes(homes: &[api::Home]) {
+fn list_homes_cmd(homes: &[api::Home]) {
     println!("Found {} home(s):", homes.len());
     for home in homes {
         println!("  {} (ID: {}, TZ: {})", home.name, home.id, home.time_zone);
