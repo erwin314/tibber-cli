@@ -107,6 +107,10 @@ cargo clippy
 cargo fmt
 ```
 
+## Disclaimer
+
+This tool is an independent, unofficial community project and is **not** written, maintained, or endorsed by [Tibber](https://tibber.com). We are not affiliated with Tibber.
+
 ## License
 
 [Apache-2.0](LICENSE)
